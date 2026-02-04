@@ -129,8 +129,11 @@ webapp_image = (
     .add_local_dir("src/app/.streamlit", remote_path="/root/.streamlit")
 )
 
-# Lightweight image for HTTP wrapper endpoints (no model loading here)
-endpoint_image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
-    "fastapi[standard]==0.115.6",
+# Lightweight image for HTTP wrapper endpoints
+# Needs src for common.py imports (via inference_service.py -> common.py -> src.config)
+endpoint_image = (
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_pip_install("fastapi[standard]==0.115.6")
+    .add_local_python_source("src")
 )
 
