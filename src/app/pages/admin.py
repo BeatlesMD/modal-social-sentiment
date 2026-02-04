@@ -9,6 +9,8 @@ import os
 import duckdb
 import streamlit as st
 
+from src.config import KNOWLEDGE_SOURCES
+
 DUCKDB_PATH = "/data/processed/sentiment.duckdb"
 TRAIN_PATH = Path("/data/training/training_data.jsonl")
 VAL_PATH = Path("/data/training/training_data_val.jsonl")
@@ -38,6 +40,8 @@ def _count_jsonl_lines(path: Path) -> int:
 def _load_snapshot() -> dict:
     snapshot = {
         "total_messages": 0,
+        "voice_messages": 0,
+        "knowledge_messages": 0,
         "processed": 0,
         "embedded": 0,
         "pending_embeddings": 0,
@@ -55,25 +59,31 @@ def _load_snapshot() -> dict:
 
     conn = duckdb.connect(DUCKDB_PATH, read_only=True)
     try:
+        knowledge_placeholders = ", ".join(["?"] * len(KNOWLEDGE_SOURCES))
         totals = conn.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS total_messages,
+                COUNT(*) FILTER (WHERE source NOT IN ({knowledge_placeholders})) AS voice_messages,
+                COUNT(*) FILTER (WHERE source IN ({knowledge_placeholders})) AS knowledge_messages,
                 COUNT(*) FILTER (WHERE processed_at IS NOT NULL) AS processed,
                 COUNT(*) FILTER (WHERE embedding_id IS NOT NULL) AS embedded,
                 COUNT(*) FILTER (WHERE embedding_id IS NULL) AS pending_embeddings,
                 COUNT(*) FILTER (WHERE sentiment_simple IS NULL) AS pending_sentiment
             FROM messages
-            """
+            """,
+            KNOWLEDGE_SOURCES + KNOWLEDGE_SOURCES,
         ).fetchone()
 
         snapshot.update(
             {
                 "total_messages": totals[0] or 0,
-                "processed": totals[1] or 0,
-                "embedded": totals[2] or 0,
-                "pending_embeddings": totals[3] or 0,
-                "pending_sentiment": totals[4] or 0,
+                "voice_messages": totals[1] or 0,
+                "knowledge_messages": totals[2] or 0,
+                "processed": totals[3] or 0,
+                "embedded": totals[4] or 0,
+                "pending_embeddings": totals[5] or 0,
+                "pending_sentiment": totals[6] or 0,
             }
         )
 
@@ -131,13 +141,15 @@ def render_admin():
         st.warning("No database found at `/data/processed/sentiment.duckdb`.")
 
     st.markdown("### System Status")
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
-        st.metric("Total Messages", f"{snapshot['total_messages']:,}")
+        st.metric("Voice Messages", f"{snapshot['voice_messages']:,}")
     with col2:
-        st.metric("Pending Embeddings", f"{snapshot['pending_embeddings']:,}")
+        st.metric("Knowledge Messages", f"{snapshot['knowledge_messages']:,}")
     with col3:
+        st.metric("Pending Embeddings", f"{snapshot['pending_embeddings']:,}")
+    with col4:
         st.metric("Pending Sentiment", f"{snapshot['pending_sentiment']:,}")
 
     st.markdown("### Ingestion Jobs")

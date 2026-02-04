@@ -2,7 +2,13 @@
 
 import modal
 
-from src.config import BASE_MODEL, DUCKDB_PATH, EMBEDDING_MODEL, LANCEDB_PATH
+from src.config import (
+    BASE_MODEL,
+    DUCKDB_PATH,
+    EMBEDDING_MODEL,
+    KNOWLEDGE_SOURCES,
+    LANCEDB_PATH,
+)
 
 from .common import data_volume, embedding_image, hf_secret, inference_image, models_volume
 
@@ -82,12 +88,15 @@ def analyze_sentiment():
     analyzer = SentimentAnalyzer(model=model, tokenizer=tokenizer)
 
     with DuckDBStore(DUCKDB_PATH) as db:
+        knowledge_placeholders = ", ".join(["?"] * len(KNOWLEDGE_SOURCES))
         result = db.conn.execute(
-            """
+            f"""
             SELECT * FROM messages
             WHERE sentiment_simple IS NULL
+            AND source NOT IN ({knowledge_placeholders})
             ORDER BY created_at DESC LIMIT 200
-            """
+            """,
+            KNOWLEDGE_SOURCES,
         ).fetchall()
         columns = [d[0] for d in db.conn.description]
         messages = [dict(zip(columns, r)) for r in result]
@@ -149,7 +158,7 @@ def reset_embeddings():
 
 @app.function(image=embedding_image, volumes={"/data": data_volume})
 def check_db_status():
-    """Check current database counts by source."""
+    """Check current database counts and coverage."""
     import structlog
     from src.storage.duckdb_store import DuckDBStore
 
@@ -165,11 +174,45 @@ def check_db_status():
         for source, count in by_source:
             logger.info("Source count", source=source, count=count)
 
+        knowledge_placeholders = ", ".join(["?"] * len(KNOWLEDGE_SOURCES))
+        split_counts = db.conn.execute(
+            f"""
+            SELECT
+                COUNT(*) FILTER (WHERE source IN ({knowledge_placeholders})) AS knowledge_messages,
+                COUNT(*) FILTER (WHERE source NOT IN ({knowledge_placeholders})) AS voice_messages
+            FROM messages
+            """,
+            KNOWLEDGE_SOURCES + KNOWLEDGE_SOURCES,
+        ).fetchone()
+        knowledge_count = split_counts[0] or 0
+        voice_count = split_counts[1] or 0
+
+        sentiment_counts = db.conn.execute(
+            """
+            SELECT COALESCE(sentiment_simple, 'unlabeled') AS sentiment, COUNT(*)
+            FROM messages
+            GROUP BY 1
+            ORDER BY 2 DESC
+            """
+        ).fetchall()
+        by_sentiment = dict(sentiment_counts)
+        logger.info(
+            "Corpus split",
+            knowledge_messages=knowledge_count,
+            voice_messages=voice_count,
+        )
+        logger.info("Sentiment coverage", counts=by_sentiment)
+
         samples = db.conn.execute(
             "SELECT id, title FROM messages LIMIT 5"
         ).fetchall()
         for msg_id, title in samples:
             logger.info("Sample message", id=msg_id, title=title)
 
-    return {"total": total, "by_source": dict(by_source)}
-
+    return {
+        "total": total,
+        "voice_messages": voice_count,
+        "knowledge_messages": knowledge_count,
+        "by_source": dict(by_source),
+        "by_sentiment": by_sentiment,
+    }

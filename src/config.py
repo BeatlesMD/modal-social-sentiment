@@ -29,6 +29,14 @@ BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 # ---------------------------------------------------------------------------
+# Source Groups
+# ---------------------------------------------------------------------------
+# Knowledge sources are useful for retrieval/context, but should be excluded
+# from product sentiment KPIs by default.
+KNOWLEDGE_SOURCES = ["docs", "blog"]
+VOICE_SOURCES = ["github", "hackernews", "reddit", "twitter", "slack"]
+
+# ---------------------------------------------------------------------------
 # Sentiment Categories
 # ---------------------------------------------------------------------------
 SENTIMENT_SIMPLE = ["positive", "negative", "neutral"]

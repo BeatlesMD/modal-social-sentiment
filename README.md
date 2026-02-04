@@ -2,6 +2,31 @@
 
 Social listening + AI support assistant for Modal, **built entirely on Modal**.
 
+## Overview
+
+This project combines two workflows in one Modal-native app:
+
+1. **Voice-of-customer analytics** for product and support signal  
+   - Ingests community conversations (currently GitHub + HackerNews, extensible to Reddit/X/Slack/support tools)
+   - Runs sentiment, topic, and content-type classification
+   - Powers a dashboard optimized for product insights (bugs, unanswered questions, pain points, high-impact mentions)
+
+2. **Knowledge retrieval for assistant quality**  
+   - Ingests docs/examples/blog content for grounding and citations
+   - Uses embeddings + LanceDB retrieval for RAG
+   - Keeps docs/blog out of core sentiment KPIs to avoid neutral-noise skew
+
+At runtime, the app provides:
+- Scheduled ingestion + processing jobs
+- A GPU-backed assistant endpoint (`POST /ask`)
+- A Streamlit dashboard + explorer + admin UI
+- Training utilities for optional fine-tuning on collected data
+
+### Data Split (Important)
+
+- **Voice sources**: used for sentiment analytics and product insights  
+- **Knowledge sources** (`docs`, `blog`): used for retrieval/context, excluded from primary KPI views by default
+
 ## Quick Start
 
 ```bash
