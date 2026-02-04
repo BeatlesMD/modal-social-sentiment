@@ -611,6 +611,124 @@ def check_db_status():
 
 
 # ===========================================================================
+# TEST FUNCTIONS (run on Modal for real environment validation)
+# ===========================================================================
+
+@app.function(image=base_image, volumes={"/data": data_volume})
+def test_db_connection():
+    """Verify DuckDB is accessible and schema is correct."""
+    from src.storage.duckdb_store import DuckDBStore
+
+    with DuckDBStore(DUCKDB_PATH) as db:
+        # Check tables exist
+        tables = db.conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+        table_names = [t[0] for t in tables]
+
+        # Check message count
+        count = db.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+
+        # Check schema has expected columns
+        columns = db.conn.execute("PRAGMA table_info(messages)").fetchall()
+        column_names = [c[1] for c in columns]
+
+    return {
+        "status": "pass",
+        "tables": table_names,
+        "message_count": count,
+        "columns": column_names,
+    }
+
+
+@app.function(image=embedding_image, volumes={"/data": data_volume})
+def test_embeddings():
+    """Verify embedding generation works."""
+    from src.processing.embeddings import EmbeddingGenerator
+
+    gen = EmbeddingGenerator(model_name=EMBEDDING_MODEL)
+    test_texts = ["Modal is a cloud platform for running Python.", "How do I deploy?"]
+    embeddings = gen.embed_batch(test_texts)
+
+    # Validate output
+    assert len(embeddings) == 2, f"Expected 2 embeddings, got {len(embeddings)}"
+    assert len(embeddings[0]) == 384, f"Expected 384 dims, got {len(embeddings[0])}"
+
+    return {
+        "status": "pass",
+        "model": EMBEDDING_MODEL,
+        "embedding_dim": len(embeddings[0]),
+        "batch_size": len(embeddings),
+    }
+
+
+@app.function(
+    image=inference_image,
+    gpu="A10G",
+    volumes={"/models": models_volume},
+    secrets=[hf_secret],
+    timeout=600,
+)
+def test_model_loading():
+    """Verify model loads correctly on GPU."""
+    import torch
+    from transformers import AutoTokenizer
+
+    # Check CUDA
+    cuda_available = torch.cuda.is_available()
+    device_name = torch.cuda.get_device_name(0) if cuda_available else "N/A"
+
+    # Load tokenizer (fast check without loading full model)
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
+
+    # Quick tokenization test
+    tokens = tokenizer("Hello Modal!", return_tensors="pt")
+
+    return {
+        "status": "pass",
+        "cuda_available": cuda_available,
+        "gpu": device_name,
+        "model": BASE_MODEL,
+        "tokenizer_vocab_size": tokenizer.vocab_size,
+        "test_tokens": tokens["input_ids"].shape[1],
+    }
+
+
+@app.function(image=base_image, volumes={"/data": data_volume}, secrets=[api_secrets])
+def test_ingestion_config():
+    """Verify ingestion dependencies and secrets are available."""
+    import httpx
+
+    results = {}
+
+    # Test HTTP client
+    try:
+        resp = httpx.get("https://modal.com", timeout=10)
+        results["http_client"] = "pass" if resp.status_code == 200 else "fail"
+    except Exception as e:
+        results["http_client"] = f"fail: {e}"
+
+    # Test GitHub token (if configured)
+    github_token = os.environ.get("GITHUB_TOKEN")
+    results["github_token"] = "configured" if github_token else "not set"
+
+    # Test volume mount
+    from pathlib import Path
+
+    data_path = Path("/data")
+    results["volume_mounted"] = data_path.exists()
+    results["volume_writable"] = os.access("/data", os.W_OK)
+
+    all_pass = (
+        results["http_client"] == "pass"
+        and results["volume_mounted"]
+        and results["volume_writable"]
+    )
+
+    return {"status": "pass" if all_pass else "fail", **results}
+
+
+# ===========================================================================
 # LOCAL ENTRYPOINT
 # ===========================================================================
 
@@ -621,12 +739,57 @@ def main(task: str = "ingest"):
 
     Usage:
         modal run app.py                    # Run all ingestion
+        modal run app.py --task test        # Run tests on Modal
         modal run app.py --task ingest      # Run ingestion
         modal run app.py --task process     # Run processing
         modal run app.py --task train       # Run fine-tuning
         modal run app.py --task ask         # Test assistant
     """
-    if task == "ingest":
+    if task == "test":
+        print("🧪 Running Modal-native tests...\n")
+        results = []
+        failed = False
+
+        # Run tests in parallel where possible
+        print("  [1/4] Testing DB connection...")
+        db_result = test_db_connection.remote()
+        results.append(("DB Connection", db_result))
+
+        print("  [2/4] Testing ingestion config...")
+        config_result = test_ingestion_config.remote()
+        results.append(("Ingestion Config", config_result))
+
+        print("  [3/4] Testing embeddings...")
+        emb_result = test_embeddings.remote()
+        results.append(("Embeddings", emb_result))
+
+        print("  [4/4] Testing model loading (GPU)...")
+        model_result = test_model_loading.remote()
+        results.append(("Model Loading", model_result))
+
+        # Print results
+        print("\n" + "=" * 50)
+        print("📊 TEST RESULTS")
+        print("=" * 50)
+
+        for name, result in results:
+            status = result.get("status", "unknown")
+            icon = "✅" if status == "pass" else "❌"
+            print(f"\n{icon} {name}:")
+            for key, value in result.items():
+                if key != "status":
+                    print(f"   {key}: {value}")
+            if status != "pass":
+                failed = True
+
+        print("\n" + "=" * 50)
+        if failed:
+            print("❌ Some tests failed!")
+            raise SystemExit(1)
+        else:
+            print("✅ All tests passed!")
+
+    elif task == "ingest":
         print("📥 Running ingestion on Modal...")
         print(f"   Docs: {ingest_docs.remote()}")
         print(f"   GitHub: {ingest_github.remote()}")
@@ -653,4 +816,4 @@ def main(task: str = "ingest"):
 
     else:
         print(f"Unknown task: {task}")
-        print("Available: ingest, process, train, ask")
+        print("Available: test, ingest, process, train, ask")
