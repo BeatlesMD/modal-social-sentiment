@@ -12,6 +12,7 @@ from modal_app.ingestion_jobs import (
     ingest_docs,
     ingest_github,
     ingest_hackernews,
+    ingest_reddit,
 )
 from modal_app.inference_service import app as inference_app, Assistant
 from modal_app.processing_jobs import (
@@ -97,6 +98,7 @@ def main(task: str = "ingest"):
             ("Docs", ingest_docs.spawn()),
             ("GitHub", ingest_github.spawn()),
             ("HackerNews", ingest_hackernews.spawn()),
+            ("Reddit", ingest_reddit.spawn()),
         ]
         for name, call in calls:
             print(f"  {name}: {call.get()}")

@@ -117,3 +117,42 @@ def ingest_hackernews():
     data_volume.commit()
     return {"status": "success", "new_messages": count}
 
+
+@app.function(
+    image=base_image,
+    volumes={"/data": data_volume},
+    secrets=[api_secrets],
+    timeout=3600,
+    # No schedule - run manually or add schedule after upgrading Modal plan
+    # schedule=modal.Cron("0 */6 * * *"),
+)
+def ingest_reddit():
+    """Ingest Reddit discussions about Modal."""
+    import structlog
+    from src.ingestion.reddit_ingester import RedditIngester
+    from src.storage.duckdb_store import DuckDBStore
+
+    logger = structlog.get_logger()
+    logger.info("Starting Reddit ingestion")
+
+    client_id = os.environ.get("REDDIT_CLIENT_ID")
+    client_secret = os.environ.get("REDDIT_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        logger.warning("Reddit credentials not configured, skipping")
+        return {"status": "skipped", "reason": "no credentials"}
+
+    ingester = RedditIngester(client_id=client_id, client_secret=client_secret)
+
+    with DuckDBStore(DUCKDB_PATH) as db:
+        state = db.get_ingestion_state("reddit")
+        count = 0
+        for message in ingester.fetch(state=state, limit=200):
+            if db.insert_message(message):
+                count += 1
+        db.update_ingestion_state(ingester.get_initial_state())
+        logger.info("Reddit ingestion complete", new_messages=count)
+
+    data_volume.commit()
+    return {"status": "success", "new_messages": count}
+

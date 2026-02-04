@@ -23,6 +23,7 @@ SOURCE_TO_FUNCTION = {
     "docs": "ingest_docs",
     "github": "ingest_github",
     "hackernews": "ingest_hackernews",
+    "reddit": "ingest_reddit",
 }
 
 
