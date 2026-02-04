@@ -4,7 +4,45 @@ Modal Support Assistant page.
 Chat interface for asking questions about Modal.
 """
 
+import os
 import streamlit as st
+import httpx
+
+# Modal inference endpoint (deployed via modal deploy app.py)
+ASSISTANT_ENDPOINT = os.environ.get(
+    "ASSISTANT_ENDPOINT",
+    "https://masondudas--modal-social-sentiment-ask.modal.run"
+)
+
+
+def call_assistant_service(question: str, use_rag: bool = True, timeout: float = 60.0) -> dict:
+    """Call the Modal inference service to get a real answer."""
+    try:
+        response = httpx.post(
+            ASSISTANT_ENDPOINT,
+            json={"question": question, "use_rag": use_rag},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+    except httpx.TimeoutException:
+        return {
+            "answer": "⏱️ The assistant took too long to respond. The GPU may be warming up - please try again in a moment.",
+            "sources": [],
+            "error": "timeout",
+        }
+    except httpx.HTTPStatusError as e:
+        return {
+            "answer": f"❌ Error from assistant service: {e.response.status_code}",
+            "sources": [],
+            "error": str(e),
+        }
+    except Exception as e:
+        return {
+            "answer": f"❌ Could not reach assistant service: {str(e)}",
+            "sources": [],
+            "error": str(e),
+        }
 
 
 def render_assistant():
@@ -28,15 +66,24 @@ def render_assistant():
     # Settings sidebar
     with st.sidebar:
         st.markdown("### Assistant Settings")
-        use_rag = st.toggle("Use RAG (recommended)", value=True)
-        temperature = st.slider("Temperature", 0.0, 1.0, 0.7, 0.1)
-        max_tokens = st.slider("Max tokens", 128, 1024, 512, 64)
+        
+        use_live = st.toggle("🔴 Live Mode (Qwen + RAG)", value=True, 
+                             help="Use the real Modal inference service with Qwen LLM and RAG")
+        use_rag = st.toggle("Use RAG context", value=True, 
+                            help="Retrieve relevant docs to augment responses")
         
         st.markdown("---")
         
         if st.button("Clear Chat", use_container_width=True):
             st.session_state.messages = [st.session_state.messages[0]]
             st.rerun()
+        
+        if use_live:
+            st.success("🟢 Connected to Modal")
+            st.caption(f"Endpoint: `...{ASSISTANT_ENDPOINT[-30:]}`")
+        else:
+            st.warning("🟡 Mock mode")
+            st.caption("Using pre-built responses")
     
     # Display chat messages
     for message in st.session_state.messages:
@@ -59,13 +106,13 @@ def render_assistant():
     pending = st.session_state.pending_question
     if pending:
         st.session_state.pending_question = None  # Clear it
-        process_question(pending, use_rag)
+        process_question(pending, use_rag, use_live)
     
     # Chat input
     if prompt := st.chat_input("Ask about Modal..."):
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
-        process_question(prompt, use_rag)
+        process_question(prompt, use_rag, use_live)
     
     # Example questions
     st.markdown("---")
@@ -88,31 +135,43 @@ def render_assistant():
                 st.rerun()
 
 
-def process_question(question: str, use_rag: bool):
+def process_question(question: str, use_rag: bool, use_live: bool):
     """Process a question and generate a response."""
     with st.chat_message("user"):
         st.markdown(question)
     
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            # In production, this would call the Modal inference service
-            # response = call_assistant_service(question, use_rag, temperature, max_tokens)
-            
-            # Mock response for development
-            response = generate_mock_response(question, use_rag)
-            
-            st.markdown(response["answer"])
-            
-            if response.get("sources"):
-                with st.expander("📚 Sources"):
-                    for source in response["sources"]:
-                        st.markdown(f"""
-                        <div style="background: #16213e; border-radius: 8px; padding: 12px; margin: 4px 0;">
-                            <strong style="color: #00d4ff;">{source.get('source', 'Unknown')}</strong><br>
-                            <small style="color: #8b9dc3;">{source.get('text', '')[:150]}...</small><br>
-                            <a href="{source.get('url', '#')}" target="_blank" style="color: #00ff88;">View →</a>
-                        </div>
-                        """, unsafe_allow_html=True)
+        if use_live:
+            with st.spinner("🧠 Thinking with Qwen + RAG..."):
+                response = call_assistant_service(question, use_rag)
+        else:
+            with st.spinner("Generating mock response..."):
+                response = generate_mock_response(question, use_rag)
+        
+        # Display the answer
+        st.markdown(response["answer"])
+        
+        # Show error info if present
+        if response.get("error"):
+            st.error(f"Service error: {response['error']}")
+        
+        # Show model info badge
+        if use_live and not response.get("error"):
+            model_type = response.get("model", "unknown")
+            used_rag = response.get("used_rag", False)
+            st.caption(f"Model: `{model_type}` | RAG: {'✅' if used_rag else '❌'}")
+        
+        # Show sources if available
+        if response.get("sources"):
+            with st.expander(f"📚 Sources ({len(response['sources'])})"):
+                for source in response["sources"]:
+                    st.markdown(f"""
+                    <div style="background: #16213e; border-radius: 8px; padding: 12px; margin: 4px 0;">
+                        <strong style="color: #00d4ff;">{source.get('source', 'Unknown')}</strong><br>
+                        <small style="color: #8b9dc3;">{source.get('text', '')[:150]}...</small><br>
+                        <a href="{source.get('url', '#')}" target="_blank" style="color: #00ff88;">View →</a>
+                    </div>
+                    """, unsafe_allow_html=True)
     
     # Add assistant message to history
     st.session_state.messages.append({
