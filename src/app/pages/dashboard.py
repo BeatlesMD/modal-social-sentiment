@@ -164,7 +164,11 @@ def render_dashboard():
         """, unsafe_allow_html=True)
     
     with col2:
-        positive_pct = stats['positive'] / stats['total_messages'] * 100
+        positive_pct = (
+            (stats["positive"] / stats["total_messages"] * 100)
+            if stats["total_messages"]
+            else 0.0
+        )
         st.markdown(f"""
         <div class="metric-card">
             <div class="metric-value" style="color: #00c853;">{positive_pct:.1f}%</div>

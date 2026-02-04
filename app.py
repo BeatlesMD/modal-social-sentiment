@@ -144,6 +144,11 @@ webapp_image = (
     .add_local_dir("src/app/.streamlit", remote_path="/root/.streamlit")
 )
 
+# Lightweight image for HTTP wrapper endpoints (no model loading here)
+endpoint_image = modal.Image.debian_slim(python_version="3.12").uv_pip_install(
+    "fastapi[standard]==0.115.6",
+)
+
 
 # ===========================================================================
 # INGESTION FUNCTIONS
@@ -269,9 +274,7 @@ def ingest_hackernews():
 )
 def generate_embeddings():
     """Generate embeddings for unprocessed messages."""
-    import shutil
     import structlog
-    from pathlib import Path
     from src.processing.embeddings import EmbeddingGenerator
     from src.storage.duckdb_store import DuckDBStore
     from src.storage.lancedb_store import LanceDBStore
@@ -283,7 +286,7 @@ def generate_embeddings():
     generator = EmbeddingGenerator(model_name=EMBEDDING_MODEL)
 
     with DuckDBStore(DUCKDB_PATH) as db:
-        messages = db.get_unprocessed_messages(limit=500)
+        messages = db.get_messages_without_embeddings(limit=500)
 
         if not messages:
             logger.info("No unprocessed messages")
@@ -292,15 +295,7 @@ def generate_embeddings():
         texts = [m["content"][:1000] for m in messages]
         embeddings = generator.embed_batch(texts)
 
-        # Use temp directory for LanceDB (avoids Volume file lock issues)
-        tmp_lance_path = "/tmp/embeddings.lance"
-        final_lance_path = LANCEDB_PATH
-
-        # Start fresh in temp (we'll merge with existing later if needed)
-        if Path(tmp_lance_path).exists():
-            shutil.rmtree(tmp_lance_path)
-
-        vector_store = LanceDBStore(tmp_lance_path)
+        vector_store = LanceDBStore(LANCEDB_PATH)
         records = []
         for msg, emb in zip(messages, embeddings):
             records.append(
@@ -316,14 +311,8 @@ def generate_embeddings():
             )
             db.update_message_analysis(message_id=msg["id"], embedding_id=msg["id"])
 
-        vector_store.add_vectors(records)
+        vector_store.upsert_vectors(records)
         logger.info("Embedding generation complete", count=len(records))
-
-        # Copy back to Volume
-        Path(final_lance_path).parent.mkdir(parents=True, exist_ok=True)
-        if Path(final_lance_path).exists():
-            shutil.rmtree(final_lance_path)
-        shutil.copytree(tmp_lance_path, final_lance_path)
 
     data_volume.commit()
     return {"status": "success", "processed": len(records)}
@@ -481,8 +470,11 @@ class Assistant:
         from src.inference.assistant import load_assistant
 
         logger = structlog.get_logger()
-        model_path = f"{FINE_TUNED_DIR}/merged"
-        model_path = model_path if Path(model_path).exists() else None
+        candidate_paths = [
+            f"{FINE_TUNED_DIR}/final",
+            f"{FINE_TUNED_DIR}/merged",
+        ]
+        model_path = next((p for p in candidate_paths if Path(p).exists()), None)
 
         logger.info("Loading assistant", model=model_path or BASE_MODEL)
         self.assistant = load_assistant(
@@ -503,10 +495,7 @@ class Assistant:
 
 
 @app.function(
-    image=inference_image,
-    gpu="A10G",
-    volumes={"/data": data_volume, "/models": models_volume},
-    secrets=[hf_secret],
+    image=endpoint_image,
 )
 @modal.fastapi_endpoint(method="POST")
 def ask(request: dict) -> dict:
@@ -559,17 +548,17 @@ def reset_embeddings():
     logger.info("Resetting embeddings...")
 
     with DuckDBStore(DUCKDB_PATH) as db:
-        # Reset processed_at and embedding_id for all messages
+        # Reset only embedding pointers; keep sentiment analysis timestamps.
         db.conn.execute(
             """
             UPDATE messages 
-            SET processed_at = NULL, embedding_id = NULL
+            SET embedding_id = NULL
         """
         )
         count = db.conn.execute(
-            "SELECT COUNT(*) FROM messages WHERE processed_at IS NULL"
+            "SELECT COUNT(*) FROM messages WHERE embedding_id IS NULL"
         ).fetchone()[0]
-        logger.info(f"Reset {count} messages for reprocessing")
+        logger.info(f"Reset {count} messages for re-embedding")
 
     # Remove old LanceDB data
     lance_path = Path(LANCEDB_PATH)

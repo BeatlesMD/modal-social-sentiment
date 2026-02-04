@@ -190,26 +190,32 @@ class DuckDBStore:
         """Update analysis fields for a message."""
         updates = []
         params = []
+        marks_analysis_complete = False
         
         if sentiment_simple is not None:
             updates.append("sentiment_simple = ?")
             params.append(sentiment_simple)
+            marks_analysis_complete = True
         if sentiment_rich is not None:
             updates.append("sentiment_rich = ?")
             params.append(sentiment_rich)
+            marks_analysis_complete = True
         if content_type is not None:
             updates.append("content_type = ?")
             params.append(content_type)
+            marks_analysis_complete = True
         if topics is not None:
             updates.append("topics = ?")
             params.append(json.dumps(topics))
+            marks_analysis_complete = True
         if embedding_id is not None:
             updates.append("embedding_id = ?")
             params.append(embedding_id)
         
         if updates:
-            updates.append("processed_at = ?")
-            params.append(datetime.utcnow())
+            if marks_analysis_complete:
+                updates.append("processed_at = ?")
+                params.append(datetime.utcnow())
             params.append(message_id)
             
             self.conn.execute(
@@ -217,17 +223,21 @@ class DuckDBStore:
                 params
             )
     
-    def get_unprocessed_messages(self, limit: int = 100) -> list[dict]:
-        """Get messages that haven't been processed yet."""
+    def get_messages_without_embeddings(self, limit: int = 100) -> list[dict]:
+        """Get messages that do not have embeddings yet."""
         result = self.conn.execute("""
             SELECT * FROM messages 
-            WHERE processed_at IS NULL 
+            WHERE embedding_id IS NULL
             ORDER BY created_at DESC 
             LIMIT ?
         """, [limit]).fetchall()
         
         columns = [desc[0] for desc in self.conn.description]
         return [dict(zip(columns, row)) for row in result]
+
+    def get_unprocessed_messages(self, limit: int = 100) -> list[dict]:
+        """Backward-compatible alias for embedding work queue."""
+        return self.get_messages_without_embeddings(limit=limit)
     
     def get_messages(
         self,
@@ -325,7 +335,7 @@ class DuckDBStore:
                 sentiment_simple,
                 COUNT(*) as count
             FROM messages
-            WHERE created_at >= CURRENT_DATE - INTERVAL '? days'
+            WHERE created_at >= CURRENT_DATE - (? * INTERVAL '1 day')
             {source_filter}
             GROUP BY DATE_TRUNC('day', created_at), sentiment_simple
             ORDER BY date
@@ -348,10 +358,11 @@ class DuckDBStore:
         
         result = self.conn.execute(f"""
             SELECT 
-                unnest(from_json(topics, '["VARCHAR"]')) as topic,
+                topic,
                 COUNT(*) as count
-            FROM messages
-            WHERE created_at >= CURRENT_DATE - INTERVAL '? days'
+            FROM messages,
+            UNNEST(from_json(topics, '["VARCHAR"]')) AS t(topic)
+            WHERE created_at >= CURRENT_DATE - (? * INTERVAL '1 day')
             AND topics IS NOT NULL
             {source_filter}
             GROUP BY topic
@@ -375,7 +386,7 @@ class DuckDBStore:
                 COUNT(CASE WHEN content_type = 'feature_request' THEN 1 END) as feature_requests,
                 COUNT(CASE WHEN content_type = 'question' THEN 1 END) as questions
             FROM messages
-            WHERE created_at >= CURRENT_DATE - INTERVAL '? days'
+            WHERE created_at >= CURRENT_DATE - (? * INTERVAL '1 day')
         """, [days]).fetchone()
         
         columns = [desc[0] for desc in self.conn.description]

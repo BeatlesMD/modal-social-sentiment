@@ -64,8 +64,14 @@ class LanceDBStore:
     
     def add_vectors(self, records: list[VectorRecord]) -> int:
         """
-        Add vector records to the store.
-        Returns count of records added.
+        Backward-compatible insert API.
+        """
+        return self.upsert_vectors(records)
+
+    def upsert_vectors(self, records: list[VectorRecord]) -> int:
+        """
+        Upsert vector records by id.
+        Returns count of records written.
         """
         if not records:
             return 0
@@ -88,10 +94,26 @@ class LanceDBStore:
             self._table = self.db.create_table(self.TABLE_NAME, data)
             logger.info("Created embeddings table", count=len(data))
         else:
+            self._delete_existing_ids([r.id for r in records])
             self._table.add(data)
-            logger.info("Added vectors", count=len(data))
+            logger.info("Upserted vectors", count=len(data))
         
         return len(data)
+
+    def _delete_existing_ids(self, record_ids: list[str], chunk_size: int = 100) -> None:
+        """Delete existing rows by id before re-inserting updated vectors."""
+        if not record_ids or self._table is None:
+            return
+
+        for i in range(0, len(record_ids), chunk_size):
+            chunk = record_ids[i : i + chunk_size]
+            predicates = []
+            for record_id in chunk:
+                safe_id = record_id.replace("'", "''")
+                predicates.append(f"id = '{safe_id}'")
+
+            if predicates:
+                self._table.delete(" OR ".join(predicates))
     
     def search(
         self,
