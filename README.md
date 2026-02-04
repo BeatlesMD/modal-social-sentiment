@@ -24,6 +24,9 @@ modal deploy app.py
 ## Commands
 
 ```bash
+# Run Modal-native tests (validates DB, GPU, embeddings, config)
+modal run app.py --task test
+
 # Ingest data from GitHub, HN, Modal docs
 modal run app.py --task ingest
 
@@ -33,11 +36,14 @@ modal run app.py --task process
 # Fine-tune the model (requires training data)
 modal run app.py --task train
 
-# Test the assistant
+# Test the assistant interactively
 modal run app.py --task ask
 
-# Deploy everything (scheduled + web endpoints)
+# Deploy everything (scheduled jobs + web endpoints)
 modal deploy app.py
+
+# Stop the deployed app
+modal app stop modal-social-sentiment
 ```
 
 ## Architecture
@@ -109,6 +115,18 @@ curl -X POST https://<your-url>/ask \
   -H "Content-Type: application/json" \
   -d '{"question": "How do I use Modal volumes?"}'
 ```
+
+## Modal Best Practices
+
+This project follows [Modal best practices](https://modal.com/docs/guide/project-structure):
+
+- **`uv_pip_install`** - Fast, reliable package installation
+- **Pinned dependencies** - Reproducible builds
+- **CUDA base images** - `nvidia/cuda:12.4.0-devel-ubuntu22.04` for GPU workloads
+- **`HF_HOME`/`TORCH_HOME`** - Model caching to volumes
+- **`@modal.concurrent`** - Multiple requests per GPU container
+- **`add_local_python_source("src")`** - Proper local code packaging
+- **Modal-native tests** - Validate infra before deploying
 
 ## License
 
