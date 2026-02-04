@@ -21,6 +21,10 @@ def render_assistant():
             }
         ]
     
+    # Track if we need to generate a response (for example button clicks)
+    if "pending_question" not in st.session_state:
+        st.session_state.pending_question = None
+    
     # Settings sidebar
     with st.sidebar:
         st.markdown("### Assistant Settings")
@@ -51,42 +55,17 @@ def render_assistant():
                         </div>
                         """, unsafe_allow_html=True)
     
+    # Handle pending question (from example buttons)
+    pending = st.session_state.pending_question
+    if pending:
+        st.session_state.pending_question = None  # Clear it
+        process_question(pending, use_rag)
+    
     # Chat input
     if prompt := st.chat_input("Ask about Modal..."):
         # Add user message
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        with st.chat_message("user"):
-            st.markdown(prompt)
-        
-        # Generate response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                # In production, this would call the Modal inference service
-                # response = call_assistant_service(prompt, use_rag, temperature, max_tokens)
-                
-                # Mock response for development
-                response = generate_mock_response(prompt, use_rag)
-                
-                st.markdown(response["answer"])
-                
-                if response.get("sources"):
-                    with st.expander("📚 Sources"):
-                        for source in response["sources"]:
-                            st.markdown(f"""
-                            <div style="background: #16213e; border-radius: 8px; padding: 12px; margin: 4px 0;">
-                                <strong style="color: #00d4ff;">{source.get('source', 'Unknown')}</strong><br>
-                                <small style="color: #8b9dc3;">{source.get('text', '')[:150]}...</small><br>
-                                <a href="{source.get('url', '#')}" target="_blank" style="color: #00ff88;">View →</a>
-                            </div>
-                            """, unsafe_allow_html=True)
-        
-        # Add assistant message to history
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": response["answer"],
-            "sources": response.get("sources", []),
-        })
+        process_question(prompt, use_rag)
     
     # Example questions
     st.markdown("---")
@@ -103,9 +82,44 @@ def render_assistant():
     for i, example in enumerate(examples):
         with cols[i % 2]:
             if st.button(example, key=f"example_{i}", use_container_width=True):
-                # Trigger the chat input programmatically
+                # Add user message and set pending question for processing
                 st.session_state.messages.append({"role": "user", "content": example})
+                st.session_state.pending_question = example
                 st.rerun()
+
+
+def process_question(question: str, use_rag: bool):
+    """Process a question and generate a response."""
+    with st.chat_message("user"):
+        st.markdown(question)
+    
+    with st.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            # In production, this would call the Modal inference service
+            # response = call_assistant_service(question, use_rag, temperature, max_tokens)
+            
+            # Mock response for development
+            response = generate_mock_response(question, use_rag)
+            
+            st.markdown(response["answer"])
+            
+            if response.get("sources"):
+                with st.expander("📚 Sources"):
+                    for source in response["sources"]:
+                        st.markdown(f"""
+                        <div style="background: #16213e; border-radius: 8px; padding: 12px; margin: 4px 0;">
+                            <strong style="color: #00d4ff;">{source.get('source', 'Unknown')}</strong><br>
+                            <small style="color: #8b9dc3;">{source.get('text', '')[:150]}...</small><br>
+                            <a href="{source.get('url', '#')}" target="_blank" style="color: #00ff88;">View →</a>
+                        </div>
+                        """, unsafe_allow_html=True)
+    
+    # Add assistant message to history
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": response["answer"],
+        "sources": response.get("sources", []),
+    })
 
 
 def generate_mock_response(question: str, use_rag: bool) -> dict:
