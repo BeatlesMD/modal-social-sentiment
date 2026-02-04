@@ -9,6 +9,16 @@ Run:    modal run app.py
 import os
 import modal
 
+# Import constants from config (single source of truth)
+from src.config import (
+    DUCKDB_PATH,
+    LANCEDB_PATH,
+    TRAINING_DIR,
+    FINE_TUNED_DIR,
+    BASE_MODEL,
+    EMBEDDING_MODEL,
+)
+
 # ---------------------------------------------------------------------------
 # App & Infrastructure
 # ---------------------------------------------------------------------------
@@ -24,73 +34,115 @@ api_secrets = modal.Secret.from_name("social-api-keys", required_keys=[])
 hf_secret = modal.Secret.from_name("huggingface-secret", required_keys=["HF_TOKEN"])
 
 # ---------------------------------------------------------------------------
-# Images with dependencies
+# Images with dependencies (using uv_pip_install + pinned versions)
 # ---------------------------------------------------------------------------
 
+# Base image for ingestion and lightweight tasks
 base_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "pandas", "pyarrow", "duckdb", "lancedb",
-        "beautifulsoup4", "httpx",
-        "tweepy", "praw", "PyGithub",
-        "tenacity", "structlog", "pydantic", "tqdm",
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_pip_install(
+        "pandas==2.2.3",
+        "pyarrow==18.1.0",
+        "duckdb==1.1.3",
+        "lancedb==0.17.0",
+        "beautifulsoup4==4.12.3",
+        "httpx==0.28.1",
+        "tweepy==4.14.0",
+        "praw==7.8.1",
+        "PyGithub==2.5.0",
+        "tenacity==9.0.0",
+        "structlog==24.4.0",
+        "pydantic==2.10.4",
+        "tqdm==4.67.1",
     )
-    .add_local_python_source("src")  # Proper way to include local Python code
+    .add_local_python_source("src")
 )
 
+# Embedding generation image (CPU-based sentence-transformers)
 embedding_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "torch", "sentence-transformers",
-        "pandas", "pyarrow", "duckdb", "lancedb",
-        "tenacity", "structlog", "pydantic", "tqdm",
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_pip_install(
+        "torch==2.5.1",
+        "sentence-transformers==3.3.1",
+        "pandas==2.2.3",
+        "pyarrow==18.1.0",
+        "duckdb==1.1.3",
+        "lancedb==0.17.0",
+        "tenacity==9.0.0",
+        "structlog==24.4.0",
+        "pydantic==2.10.4",
+        "tqdm==4.67.1",
     )
     .add_local_python_source("src")
 )
 
+# GPU inference image - using NVIDIA CUDA base for robust GPU support
 inference_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "torch", "transformers", "accelerate", "bitsandbytes",
-        "sentence-transformers", "lancedb", "duckdb", "pyarrow",
-        "tenacity", "structlog", "pydantic",
-        "fastapi[standard]",  # Required for web endpoints
+    modal.Image.from_registry(
+        "nvidia/cuda:12.4.0-devel-ubuntu22.04",
+        add_python="3.12",
     )
+    .uv_pip_install(
+        "torch==2.5.1",
+        "transformers==4.47.1",
+        "accelerate==1.2.1",
+        "bitsandbytes==0.45.0",
+        "sentence-transformers==3.3.1",
+        "lancedb==0.17.0",
+        "duckdb==1.1.3",
+        "pyarrow==18.1.0",
+        "tenacity==9.0.0",
+        "structlog==24.4.0",
+        "pydantic==2.10.4",
+        "fastapi[standard]==0.115.6",
+    )
+    .env({"HF_HOME": "/models", "TORCH_HOME": "/models"})  # Cache models to volume
     .add_local_python_source("src")
 )
 
+# GPU training image - using NVIDIA CUDA base
 training_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "torch", "transformers", "accelerate", "bitsandbytes",
-        "peft", "datasets", "trl",
-        "pandas", "pyarrow", "duckdb",
-        "tenacity", "structlog", "pydantic", "tqdm",
+    modal.Image.from_registry(
+        "nvidia/cuda:12.4.0-devel-ubuntu22.04",
+        add_python="3.12",
     )
+    .uv_pip_install(
+        "torch==2.5.1",
+        "transformers==4.47.1",
+        "accelerate==1.2.1",
+        "bitsandbytes==0.45.0",
+        "peft==0.14.0",
+        "datasets==3.2.0",
+        "trl==0.13.0",
+        "pandas==2.2.3",
+        "pyarrow==18.1.0",
+        "duckdb==1.1.3",
+        "tenacity==9.0.0",
+        "structlog==24.4.0",
+        "pydantic==2.10.4",
+        "tqdm==4.67.1",
+    )
+    .env({"HF_HOME": "/models", "TORCH_HOME": "/models"})  # Cache models to volume
     .add_local_python_source("src")
 )
 
+# Webapp image for Streamlit dashboard
 webapp_image = (
-    modal.Image.debian_slim(python_version="3.11")
-    .pip_install(
-        "streamlit", "plotly", "altair",
-        "pandas", "pyarrow", "duckdb",
-        "httpx", "pydantic", "structlog",
+    modal.Image.debian_slim(python_version="3.12")
+    .uv_pip_install(
+        "streamlit==1.41.1",
+        "plotly==5.24.1",
+        "altair==5.5.0",
+        "pandas==2.2.3",
+        "pyarrow==18.1.0",
+        "duckdb==1.1.3",
+        "httpx==0.28.1",
+        "pydantic==2.10.4",
+        "structlog==24.4.0",
     )
     .add_local_python_source("src")
     .add_local_dir("src/app/.streamlit", remote_path="/root/.streamlit")
 )
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-
-DUCKDB_PATH = "/data/processed/sentiment.duckdb"
-LANCEDB_PATH = "/data/vectors/embeddings.lance"
-TRAINING_DIR = "/data/training"
-FINE_TUNED_DIR = "/models/fine-tuned"
-BASE_MODEL = "Qwen/Qwen2.5-3B-Instruct"
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 # ===========================================================================
@@ -109,29 +161,35 @@ def ingest_docs():
     import structlog
     from src.ingestion.docs_ingester import DocsIngester
     from src.storage.duckdb_store import DuckDBStore
-    
+
     logger = structlog.get_logger()
     logger.info("Starting docs ingestion")
-    
+
     # Use GitHub token if available for better rate limits
     github_token = os.environ.get("GITHUB_TOKEN")
     ingester = DocsIngester(github_token=github_token)
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
         state = db.get_ingestion_state("docs")
         count = 0
         total_fetched = 0
         for message in ingester.fetch(state=state, limit=100):
             total_fetched += 1
-            logger.debug("Processing message", id=message.id, title=message.title[:50] if message.title else "N/A")
+            logger.debug(
+                "Processing message",
+                id=message.id,
+                title=message.title[:50] if message.title else "N/A",
+            )
             if db.insert_message(message):
                 count += 1
                 logger.info("Inserted message", id=message.id)
             else:
                 logger.warning("Failed to insert", id=message.id)
         db.update_ingestion_state(ingester.get_initial_state())
-        logger.info("Docs ingestion complete", new_messages=count, total_fetched=total_fetched)
-    
+        logger.info(
+            "Docs ingestion complete", new_messages=count, total_fetched=total_fetched
+        )
+
     data_volume.commit()
     return {"status": "success", "new_messages": count}
 
@@ -148,13 +206,13 @@ def ingest_github():
     import structlog
     from src.ingestion.github_ingester import GitHubIngester
     from src.storage.duckdb_store import DuckDBStore
-    
+
     logger = structlog.get_logger()
     logger.info("Starting GitHub ingestion")
-    
+
     token = os.environ.get("GITHUB_TOKEN") or None
     ingester = GitHubIngester(token=token)
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
         state = db.get_ingestion_state("github")
         count = 0
@@ -163,7 +221,7 @@ def ingest_github():
                 count += 1
         db.update_ingestion_state(ingester.get_initial_state())
         logger.info("GitHub ingestion complete", new_messages=count)
-    
+
     data_volume.commit()
     return {"status": "success", "new_messages": count}
 
@@ -180,12 +238,12 @@ def ingest_hackernews():
     import structlog
     from src.ingestion.hackernews_ingester import HackerNewsIngester
     from src.storage.duckdb_store import DuckDBStore
-    
+
     logger = structlog.get_logger()
     logger.info("Starting HackerNews ingestion")
-    
+
     ingester = HackerNewsIngester()
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
         state = db.get_ingestion_state("hackernews")
         count = 0
@@ -194,7 +252,7 @@ def ingest_hackernews():
                 count += 1
         db.update_ingestion_state(ingester.get_initial_state())
         logger.info("HackerNews ingestion complete", new_messages=count)
-    
+
     data_volume.commit()
     return {"status": "success", "new_messages": count}
 
@@ -218,53 +276,55 @@ def generate_embeddings():
     from src.storage.duckdb_store import DuckDBStore
     from src.storage.lancedb_store import LanceDBStore
     from src.storage.schemas import VectorRecord
-    
+
     logger = structlog.get_logger()
     logger.info("Starting embedding generation")
-    
+
     generator = EmbeddingGenerator(model_name=EMBEDDING_MODEL)
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
         messages = db.get_unprocessed_messages(limit=500)
-        
+
         if not messages:
             logger.info("No unprocessed messages")
             return {"status": "success", "processed": 0}
-        
+
         texts = [m["content"][:1000] for m in messages]
         embeddings = generator.embed_batch(texts)
-        
+
         # Use temp directory for LanceDB (avoids Volume file lock issues)
         tmp_lance_path = "/tmp/embeddings.lance"
         final_lance_path = LANCEDB_PATH
-        
+
         # Start fresh in temp (we'll merge with existing later if needed)
         if Path(tmp_lance_path).exists():
             shutil.rmtree(tmp_lance_path)
-        
+
         vector_store = LanceDBStore(tmp_lance_path)
         records = []
         for msg, emb in zip(messages, embeddings):
-            records.append(VectorRecord(
-                id=msg["id"],
-                text=msg["content"][:1000],
-                vector=emb,
-                source=msg["source"],
-                created_at=msg["created_at"],
-                url=msg.get("url"),
-                metadata={"title": msg.get("title")},
-            ))
+            records.append(
+                VectorRecord(
+                    id=msg["id"],
+                    text=msg["content"][:1000],
+                    vector=emb,
+                    source=msg["source"],
+                    created_at=msg["created_at"],
+                    url=msg.get("url"),
+                    metadata={"title": msg.get("title")},
+                )
+            )
             db.update_message_analysis(message_id=msg["id"], embedding_id=msg["id"])
-        
+
         vector_store.add_vectors(records)
         logger.info("Embedding generation complete", count=len(records))
-        
+
         # Copy back to Volume
         Path(final_lance_path).parent.mkdir(parents=True, exist_ok=True)
         if Path(final_lance_path).exists():
             shutil.rmtree(final_lance_path)
         shutil.copytree(tmp_lance_path, final_lance_path)
-    
+
     data_volume.commit()
     return {"status": "success", "processed": len(records)}
 
@@ -272,7 +332,7 @@ def generate_embeddings():
 @app.function(
     image=inference_image,
     gpu="A10G",
-    volumes={"/data": data_volume},
+    volumes={"/data": data_volume, "/models": models_volume},
     secrets=[hf_secret],
     timeout=7200,
     schedule=modal.Cron("0 */12 * * *"),
@@ -282,25 +342,27 @@ def analyze_sentiment():
     import structlog
     from src.processing.sentiment import SentimentAnalyzer, load_model_for_sentiment
     from src.storage.duckdb_store import DuckDBStore
-    
+
     logger = structlog.get_logger()
     logger.info("Starting sentiment analysis")
-    
+
     model, tokenizer = load_model_for_sentiment(BASE_MODEL)
     analyzer = SentimentAnalyzer(model=model, tokenizer=tokenizer)
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
-        result = db.conn.execute("""
+        result = db.conn.execute(
+            """
             SELECT * FROM messages 
             WHERE sentiment_simple IS NULL 
             ORDER BY created_at DESC LIMIT 200
-        """).fetchall()
+        """
+        ).fetchall()
         columns = [d[0] for d in db.conn.description]
         messages = [dict(zip(columns, r)) for r in result]
-        
+
         if not messages:
             return {"status": "success", "processed": 0}
-        
+
         for msg in messages:
             try:
                 res = analyzer.analyze(msg["content"])
@@ -313,10 +375,10 @@ def analyze_sentiment():
                 )
             except Exception as e:
                 logger.warning("Analysis failed", id=msg["id"], error=str(e))
-        
+
         db.refresh_daily_metrics()
         logger.info("Sentiment analysis complete", count=len(messages))
-    
+
     data_volume.commit()
     return {"status": "success", "processed": len(messages)}
 
@@ -337,29 +399,31 @@ def prepare_training_data():
     import structlog
     from src.training.dataset import TrainingDatasetBuilder
     from src.storage.duckdb_store import DuckDBStore
-    
+
     logger = structlog.get_logger()
     logger.info("Preparing training data")
-    
+
     builder = TrainingDatasetBuilder(output_dir=TRAINING_DIR)
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
-        result = db.conn.execute("""
+        result = db.conn.execute(
+            """
             SELECT * FROM messages WHERE content IS NOT NULL AND LENGTH(content) > 100
-        """).fetchall()
+        """
+        ).fetchall()
         columns = [d[0] for d in db.conn.description]
         messages = [dict(zip(columns, r)) for r in result]
-    
+
     doc_examples = builder.build_from_docs(messages)
     conv_examples = builder.build_from_conversations(messages)
     all_examples = doc_examples + conv_examples
-    
+
     if not all_examples:
         return {"status": "error", "reason": "no examples"}
-    
+
     train_path, val_path = builder.save_dataset(all_examples)
     data_volume.commit()
-    
+
     return {
         "status": "success",
         "total": len(all_examples),
@@ -378,25 +442,25 @@ def run_finetuning(train_path: str = None, epochs: int = 3):
     """Run QLoRA fine-tuning."""
     import structlog
     from src.training.finetune import QLoRATrainer
-    
+
     logger = structlog.get_logger()
-    
+
     train_path = train_path or f"{TRAINING_DIR}/training_data.jsonl"
     val_path = train_path.replace(".jsonl", "_val.jsonl")
-    
+
     trainer = QLoRATrainer(
         base_model=BASE_MODEL,
         output_dir=FINE_TUNED_DIR,
         num_epochs=epochs,
     )
     model_path = trainer.train(train_path, val_path)
-    
+
     models_volume.commit()
     return {"status": "success", "model_path": model_path}
 
 
 # ===========================================================================
-# INFERENCE SERVICE
+# INFERENCE SERVICE (with concurrent request handling)
 # ===========================================================================
 
 @app.cls(
@@ -406,19 +470,20 @@ def run_finetuning(train_path: str = None, epochs: int = 3):
     secrets=[hf_secret],
     scaledown_window=300,
 )
+@modal.concurrent(max_inputs=4)  # Handle up to 4 concurrent requests per GPU
 class Assistant:
     """RAG-powered Modal support assistant."""
-    
+
     @modal.enter()
     def load(self):
         from pathlib import Path
         import structlog
         from src.inference.assistant import load_assistant
-        
+
         logger = structlog.get_logger()
         model_path = f"{FINE_TUNED_DIR}/merged"
         model_path = model_path if Path(model_path).exists() else None
-        
+
         logger.info("Loading assistant", model=model_path or BASE_MODEL)
         self.assistant = load_assistant(
             model_path=model_path,
@@ -427,17 +492,22 @@ class Assistant:
             vector_store_path=LANCEDB_PATH,
             use_quantization=True,
         )
-    
+
     @modal.method()
     def ask(self, question: str, use_rag: bool = True) -> dict:
         return self.assistant.answer(question=question, use_rag=use_rag)
-    
+
     @modal.method()
     def health(self) -> dict:
         return {"status": "healthy", "model": self.assistant.model is not None}
 
 
-@app.function(image=inference_image, gpu="A10G", volumes={"/data": data_volume, "/models": models_volume}, secrets=[hf_secret])
+@app.function(
+    image=inference_image,
+    gpu="A10G",
+    volumes={"/data": data_volume, "/models": models_volume},
+    secrets=[hf_secret],
+)
 @modal.fastapi_endpoint(method="POST")
 def ask(request: dict) -> dict:
     """Web endpoint: POST /ask with {"question": "..."}"""
@@ -459,15 +529,22 @@ def ask(request: dict) -> dict:
 def dashboard():
     """Streamlit dashboard."""
     import subprocess
-    subprocess.Popen([
-        "streamlit", "run", "/root/src/app/main.py",
-        "--server.port=8501", "--server.address=0.0.0.0",
-        "--server.headless=true", "--browser.gatherUsageStats=false",
-    ])
+
+    subprocess.Popen(
+        [
+            "streamlit",
+            "run",
+            "/root/src/app/main.py",
+            "--server.port=8501",
+            "--server.address=0.0.0.0",
+            "--server.headless=true",
+            "--browser.gatherUsageStats=false",
+        ]
+    )
 
 
 # ===========================================================================
-# ENTRYPOINT
+# UTILITY FUNCTIONS
 # ===========================================================================
 
 @app.function(image=base_image, volumes={"/data": data_volume})
@@ -477,25 +554,29 @@ def reset_embeddings():
     import structlog
     from pathlib import Path
     from src.storage.duckdb_store import DuckDBStore
-    
+
     logger = structlog.get_logger()
     logger.info("Resetting embeddings...")
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
         # Reset processed_at and embedding_id for all messages
-        db.conn.execute("""
+        db.conn.execute(
+            """
             UPDATE messages 
             SET processed_at = NULL, embedding_id = NULL
-        """)
-        count = db.conn.execute("SELECT COUNT(*) FROM messages WHERE processed_at IS NULL").fetchone()[0]
+        """
+        )
+        count = db.conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE processed_at IS NULL"
+        ).fetchone()[0]
         logger.info(f"Reset {count} messages for reprocessing")
-    
+
     # Remove old LanceDB data
     lance_path = Path(LANCEDB_PATH)
     if lance_path.exists():
         shutil.rmtree(lance_path)
         logger.info("Removed old LanceDB data")
-    
+
     data_volume.commit()
     return {"status": "success", "reset_count": count}
 
@@ -505,31 +586,39 @@ def check_db_status():
     """Check database status."""
     import structlog
     from src.storage.duckdb_store import DuckDBStore
-    
+
     logger = structlog.get_logger()
-    
+
     with DuckDBStore(DUCKDB_PATH) as db:
-        total = db.conn.execute('SELECT COUNT(*) FROM messages').fetchone()[0]
+        total = db.conn.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
         logger.info(f"Total messages: {total}")
-        
-        by_source = db.conn.execute('SELECT source, COUNT(*) FROM messages GROUP BY source').fetchall()
+
+        by_source = db.conn.execute(
+            "SELECT source, COUNT(*) FROM messages GROUP BY source"
+        ).fetchall()
         for source, count in by_source:
             logger.info(f"  {source}: {count}")
-        
+
         # Sample a few messages
-        samples = db.conn.execute('SELECT id, title FROM messages LIMIT 5').fetchall()
+        samples = db.conn.execute(
+            "SELECT id, title FROM messages LIMIT 5"
+        ).fetchall()
         logger.info("Sample messages:")
         for id, title in samples:
             logger.info(f"  {id}: {title}")
-    
+
     return {"total": total, "by_source": dict(by_source)}
 
+
+# ===========================================================================
+# LOCAL ENTRYPOINT
+# ===========================================================================
 
 @app.local_entrypoint()
 def main(task: str = "ingest"):
     """
     Run tasks on Modal.
-    
+
     Usage:
         modal run app.py                    # Run all ingestion
         modal run app.py --task ingest      # Run ingestion
@@ -542,26 +631,26 @@ def main(task: str = "ingest"):
         print(f"   Docs: {ingest_docs.remote()}")
         print(f"   GitHub: {ingest_github.remote()}")
         print(f"   HackerNews: {ingest_hackernews.remote()}")
-        
+
     elif task == "process":
         print("⚙️ Running processing on Modal...")
         print(f"   Embeddings: {generate_embeddings.remote()}")
         print(f"   Sentiment: {analyze_sentiment.remote()}")
-        
+
     elif task == "train":
         print("🎯 Running fine-tuning on Modal...")
         result = prepare_training_data.remote()
         print(f"   Prep: {result}")
         if result["status"] == "success":
             print(f"   Training: {run_finetuning.remote(result['train_path'])}")
-            
+
     elif task == "ask":
         print("🤖 Testing assistant...")
         assistant = Assistant()
         print(f"   Health: {assistant.health.remote()}")
         result = assistant.ask.remote("How do I use Modal volumes?")
         print(f"   Answer: {result['answer'][:300]}...")
-        
+
     else:
         print(f"Unknown task: {task}")
         print("Available: ingest, process, train, ask")

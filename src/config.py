@@ -1,7 +1,8 @@
 """
 Shared configuration constants.
 
-This module is imported by Modal functions running in containers.
+This module is the single source of truth for all configuration.
+Imported by Modal functions running in containers.
 """
 
 # ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
 SENTIMENT_SIMPLE = ["positive", "negative", "neutral"]
 SENTIMENT_RICH = [
     "frustration",
-    "confusion", 
+    "confusion",
     "delight",
     "gratitude",
     "curiosity",
