@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -470,8 +471,10 @@ def render_dashboard():
     with col1:
         st.markdown("### Sentiment Trends")
 
-        # Only show chart if we have enough data points (at least 7 days)
-        if len(sentiment_data) >= 7:
+        num_days = len(sentiment_data)
+
+        if num_days >= 7:
+            # Full line chart for 7+ days
             fig = go.Figure()
             fig.add_trace(
                 go.Scatter(
@@ -515,12 +518,53 @@ def render_dashboard():
             )
 
             st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info(
-                f"📊 Need more data for trend visualization. "
-                f"Currently {len(sentiment_data)} days of data (need 7+). "
-                f"Run more ingestion jobs to populate."
+
+        elif num_days >= 1:
+            # Mini bar chart for 1-6 days (not enough for trend line)
+            st.caption(f"📊 {num_days} day(s) of data — showing daily breakdown")
+
+            fig = go.Figure()
+            fig.add_trace(
+                go.Bar(
+                    x=sentiment_data["date"],
+                    y=sentiment_data["positive"],
+                    name="Positive",
+                    marker_color="#00c853",
+                )
             )
+            fig.add_trace(
+                go.Bar(
+                    x=sentiment_data["date"],
+                    y=sentiment_data["neutral"],
+                    name="Neutral",
+                    marker_color="#78909c",
+                )
+            )
+            fig.add_trace(
+                go.Bar(
+                    x=sentiment_data["date"],
+                    y=sentiment_data["negative"],
+                    name="Negative",
+                    marker_color="#ff5252",
+                )
+            )
+
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=20, b=20),
+                legend=dict(orientation="h", y=1.1),
+                barmode="group",
+                xaxis=dict(showgrid=False),
+                yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)"),
+                height=200,
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+        else:
+            st.info("📊 No sentiment data yet. Run ingestion and sentiment analysis.")
 
     with col2:
         st.markdown("### Top Topics")
@@ -632,20 +676,24 @@ def render_dashboard():
         st.info("No high-impact mentions found yet.")
     else:
         for item in high_impact[:6]:
-            title = item.get("title") or item.get("content", "")[:120]
-            source = item.get("source", "unknown")
+            # Escape user content to prevent HTML injection
+            raw_title = item.get("title") or item.get("content", "")[:140]
+            title = html.escape(raw_title[:140])
+            source = html.escape(str(item.get("source", "unknown")))
             score = item.get("impact_score", 0)
-            sentiment = item.get("sentiment_simple") or "unknown"
+            sentiment = html.escape(str(item.get("sentiment_simple") or "unknown"))
             created_at = item.get("created_at")
             created_text = created_at.strftime("%Y-%m-%d") if created_at else "N/A"
-            url = item.get("url") or "#"
+            # Validate URL to prevent javascript: injection
+            raw_url = item.get("url") or ""
+            url = raw_url if raw_url.startswith(("http://", "https://")) else "#"
 
             st.markdown(
                 f"""
                 <div class="metric-card" style="margin-bottom: 10px;">
                     <div style="display:flex; justify-content:space-between; gap:12px;">
                         <div>
-                            <strong>{title[:140]}</strong><br>
+                            <strong>{title}</strong><br>
                             <small style="color:#8b9dc3;">{source} • {created_text}</small>
                         </div>
                         <div style="text-align:right; min-width:120px;">
@@ -662,18 +710,17 @@ def render_dashboard():
     st.markdown("### Recent Voice Messages")
     recent_messages = data["recent_messages"]
     if not recent_messages:
-        st.info("No messages yet. Run ingestion to populate data.")
-        return
-
-    for title, source, sentiment, created in recent_messages:
-        sentiment_icon = {
-            "positive": "🟢",
-            "negative": "🔴",
-            "neutral": "⚪",
-        }.get(sentiment, "⚪")
-        snippet = (title or "Untitled")[:70]
-        created_text = created.strftime("%b %d") if created else "N/A"
-        st.markdown(f"{sentiment_icon} **{snippet}** `{source}` - {created_text}")
+        st.info("No recent messages. Run ingestion to populate data.")
+    else:
+        for title, source, sentiment, created in recent_messages:
+            sentiment_icon = {
+                "positive": "🟢",
+                "negative": "🔴",
+                "neutral": "⚪",
+            }.get(sentiment, "⚪")
+            snippet = (title or "Untitled")[:70]
+            created_text = created.strftime("%b %d") if created else "N/A"
+            st.markdown(f"{sentiment_icon} **{snippet}** `{source}` - {created_text}")
 
     # Uncategorized topics section
     uncategorized = data.get("uncategorized", [])
@@ -687,25 +734,29 @@ def render_dashboard():
 
         with st.expander(f"View {len(uncategorized)} uncategorized mentions", expanded=False):
             for item in uncategorized:
-                title = item.get("title") or item.get("content", "")[:100]
-                source = item.get("source", "unknown")
-                sentiment = item.get("sentiment_simple") or "unknown"
+                # Escape user content to prevent HTML injection
+                raw_title = item.get("title") or item.get("content", "")[:100]
+                title = html.escape(raw_title[:120])
+                source = html.escape(str(item.get("source", "unknown")))
+                sentiment = html.escape(str(item.get("sentiment_simple") or "unknown"))
                 created_at = item.get("created_at")
                 created_text = created_at.strftime("%Y-%m-%d") if created_at else "N/A"
-                url = item.get("url") or "#"
+                # Validate URL to prevent javascript: injection
+                raw_url = item.get("url") or ""
+                url = raw_url if raw_url.startswith(("http://", "https://")) else "#"
 
                 sentiment_color = {
                     "positive": "#00c853",
                     "negative": "#ff5252",
                     "neutral": "#78909c",
-                }.get(sentiment, "#78909c")
+                }.get(item.get("sentiment_simple"), "#78909c")
 
                 st.markdown(
                     f"""
                     <div class="metric-card" style="margin-bottom: 8px; padding: 12px;">
                         <div style="display:flex; justify-content:space-between; gap:12px;">
                             <div style="flex: 1;">
-                                <strong>{title[:120]}</strong><br>
+                                <strong>{title}</strong><br>
                                 <small style="color:#8b9dc3;">{source} • {created_text}</small>
                             </div>
                             <div style="text-align:right; min-width:80px;">
