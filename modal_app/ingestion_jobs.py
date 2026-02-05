@@ -127,9 +127,11 @@ def ingest_hackernews():
     # schedule=modal.Cron("0 */6 * * *"),
 )
 def ingest_reddit():
-    """Ingest Reddit discussions about Modal."""
+    """Ingest Reddit discussions about Modal.
+    
+    Uses API if credentials are available, otherwise falls back to RSS feeds.
+    """
     import structlog
-    from src.ingestion.reddit_ingester import RedditIngester
     from src.storage.duckdb_store import DuckDBStore
 
     logger = structlog.get_logger()
@@ -138,21 +140,28 @@ def ingest_reddit():
     client_id = os.environ.get("REDDIT_CLIENT_ID")
     client_secret = os.environ.get("REDDIT_CLIENT_SECRET")
 
-    if not client_id or not client_secret:
-        logger.warning("Reddit credentials not configured, skipping")
-        return {"status": "skipped", "reason": "no credentials"}
-
-    ingester = RedditIngester(client_id=client_id, client_secret=client_secret)
+    # Use API if credentials available, otherwise RSS fallback
+    if client_id and client_secret:
+        from src.ingestion.reddit_ingester import RedditIngester
+        ingester = RedditIngester(client_id=client_id, client_secret=client_secret)
+        mode = "api"
+        limit = 200
+    else:
+        from src.ingestion.reddit_rss_ingester import RedditRSSIngester
+        ingester = RedditRSSIngester()
+        mode = "rss"
+        limit = 100  # RSS is more limited
+        logger.info("No Reddit API credentials, using RSS fallback")
 
     with DuckDBStore(DUCKDB_PATH) as db:
         state = db.get_ingestion_state("reddit")
         count = 0
-        for message in ingester.fetch(state=state, limit=200):
+        for message in ingester.fetch(state=state, limit=limit):
             if db.insert_message(message):
                 count += 1
         db.update_ingestion_state(ingester.get_initial_state())
-        logger.info("Reddit ingestion complete", new_messages=count)
+        logger.info("Reddit ingestion complete", new_messages=count, mode=mode)
 
     data_volume.commit()
-    return {"status": "success", "new_messages": count}
+    return {"status": "success", "new_messages": count, "mode": mode}
 
