@@ -29,6 +29,12 @@ from modal_app.test_jobs import (
     test_ingestion_config,
     test_model_loading,
 )
+from modal_app.query_jobs import (
+    app as query_app,
+    get_sample_queries,
+    get_schema,
+    query_duckdb,
+)
 from modal_app.training_jobs import (
     app as training_app,
     merge_finetuned_weights,
@@ -44,6 +50,7 @@ app.include(training_app)
 app.include(inference_app)
 app.include(web_app)
 app.include(test_app)
+app.include(query_app)
 
 
 @app.local_entrypoint()
@@ -59,6 +66,9 @@ def main(task: str = "ingest"):
         modal run app.py --task merge       # Merge LoRA weights
         modal run app.py --task ask         # Test assistant
         modal run app.py --task status      # Inspect DB counts
+        modal run app.py --task schema      # Show DB schema
+        modal run app.py --task examples    # Show example queries
+        modal run app.py --task query       # Run SQL query (use --sql "SELECT ...")
     """
     if task == "test":
         print("Running Modal-native tests...\n")
@@ -138,6 +148,39 @@ def main(task: str = "ingest"):
         print("Resetting embeddings...")
         print(f"  {reset_embeddings.remote()}")
 
+    elif task == "schema":
+        print("Fetching database schema...")
+        schema = get_schema.remote()
+        import json
+        print(json.dumps(schema, indent=2))
+
+    elif task == "examples":
+        print("Example queries for exploring the data:\n")
+        examples = get_sample_queries.remote()
+        import json
+        print(json.dumps(examples, indent=2))
+
+    elif task == "query":
+        import os
+
+        # Get SQL from environment variable
+        sql = os.environ.get("SQL_QUERY")
+        if not sql:
+            print("Error: SQL_QUERY environment variable required")
+            print('Example: SQL_QUERY="SELECT COUNT(*) FROM messages" modal run app.py --task query')
+            return
+
+        print(f"Executing query: {sql}\n")
+        result = query_duckdb.remote(sql=sql, limit=1000, format="json")
+        import json
+
+        print(f"Rows returned: {result['row_count']}")
+        print(f"Columns: {', '.join(result['columns'])}\n")
+        print("Results:")
+        print(json.dumps(result["rows"], indent=2, default=str))
+
     else:
         print(f"Unknown task: {task}")
-        print("Available: test, ingest, process, train, merge, ask, status, reset-embeddings")
+        print(
+            "Available: test, ingest, process, train, merge, ask, status, reset-embeddings, schema, examples, query"
+        )
