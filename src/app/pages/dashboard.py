@@ -120,13 +120,14 @@ def _load_dashboard_data() -> dict | None:
             "questions": stats_result[6] or 0,
         }
 
+        # Use 30-day window for better signal with sparse data
         unanswered_questions = conn.execute(
             f"""
             SELECT COUNT(*)
             FROM messages m
             WHERE {_voice_where_clause('m')}
               AND m.content_type = 'question'
-              AND m.created_at >= CURRENT_DATE - INTERVAL '7 days'
+              AND m.created_at >= CURRENT_DATE - INTERVAL '30 days'
               AND NOT EXISTS (
                   SELECT 1
                   FROM messages r
@@ -142,7 +143,7 @@ def _load_dashboard_data() -> dict | None:
             FROM messages
             WHERE {voice_where}
               AND content_type = 'bug_report'
-              AND created_at >= CURRENT_DATE - INTERVAL '7 days'
+              AND created_at >= CURRENT_DATE - INTERVAL '30 days'
             """,
             voice_params,
         ).fetchone()[0]
@@ -236,7 +237,7 @@ def _load_dashboard_data() -> dict | None:
             FROM messages m,
             UNNEST(from_json(m.topics, '["VARCHAR"]')) AS t(topic)
             WHERE {_voice_where_clause('m')}
-              AND m.created_at >= CURRENT_DATE - INTERVAL '7 days'
+              AND m.created_at >= CURRENT_DATE - INTERVAL '30 days'
               AND m.topics IS NOT NULL
               AND m.topics != '[]'
             GROUP BY topic
@@ -267,6 +268,7 @@ def _load_dashboard_data() -> dict | None:
             )
         )
 
+        # Get high-impact mentions, excluding neutral sentiment
         high_impact_rows = conn.execute(
             f"""
             SELECT
@@ -283,6 +285,7 @@ def _load_dashboard_data() -> dict | None:
             FROM messages
             WHERE {voice_where}
               AND created_at >= CURRENT_DATE - INTERVAL '30 days'
+              AND (sentiment_simple != 'neutral' OR sentiment_simple IS NULL)
             ORDER BY created_at DESC
             LIMIT 300
             """,
@@ -315,6 +318,39 @@ def _load_dashboard_data() -> dict | None:
             voice_params,
         ).fetchall()
 
+        # Get uncategorized messages (topic = 'other' or no topics assigned)
+        uncategorized_rows = conn.execute(
+            f"""
+            SELECT
+                id,
+                title,
+                content,
+                source,
+                created_at,
+                sentiment_simple,
+                url
+            FROM messages m
+            WHERE {_voice_where_clause('m')}
+              AND m.created_at >= CURRENT_DATE - INTERVAL '30 days'
+              AND (
+                  m.topics IS NULL
+                  OR m.topics = '[]'
+                  OR m.topics = '["other"]'
+                  OR EXISTS (
+                      SELECT 1
+                      FROM UNNEST(from_json(m.topics, '["VARCHAR"]')) AS t(topic)
+                      WHERE t.topic = 'other'
+                  )
+              )
+            ORDER BY m.created_at DESC
+            LIMIT 20
+            """,
+            voice_params,
+        ).fetchall()
+
+        uncategorized_cols = [d[0] for d in conn.description]
+        uncategorized = [dict(zip(uncategorized_cols, row)) for row in uncategorized_rows]
+
         conn.close()
 
         return {
@@ -327,6 +363,7 @@ def _load_dashboard_data() -> dict | None:
             "new_bug_reports": new_bug_reports or 0,
             "high_impact": high_impact,
             "recent_messages": recent_result,
+            "uncategorized": uncategorized,
         }
     except Exception as exc:
         st.error(f"Database error: {exc}")
@@ -347,6 +384,7 @@ def _fallback_data() -> dict:
         "sentiment_data": pd.DataFrame({"date": [], "positive": [], "negative": [], "neutral": []}),
         "topics": pd.DataFrame({"topic": ["No data"], "count": [0]}),
         "sources": pd.DataFrame({"source": ["No data"], "count": [0]}),
+        "uncategorized": [],
         "pain_points": pd.DataFrame(
             {"topic": [], "mentions": [], "negative_mentions": [], "friction_mentions": []}
         ),
@@ -403,7 +441,7 @@ def render_dashboard():
                 <div class="metric-value" style="color: #ff9800;">
                     {data['unanswered_questions']:,}
                 </div>
-                <div class="metric-label">Unanswered Questions (7d)</div>
+                <div class="metric-label">Unanswered Questions (30d)</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -416,7 +454,7 @@ def render_dashboard():
                 <div class="metric-value" style="color: #ff5252;">
                     {data['new_bug_reports']:,}
                 </div>
-                <div class="metric-label">New Bug Reports (7d)</div>
+                <div class="metric-label">New Bug Reports (30d)</div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -432,49 +470,57 @@ def render_dashboard():
     with col1:
         st.markdown("### Sentiment Trends")
 
-        fig = go.Figure()
-        fig.add_trace(
-            go.Scatter(
-                x=sentiment_data["date"],
-                y=sentiment_data["positive"],
-                name="Positive",
-                fill="tonexty",
-                line=dict(color="#00c853", width=2),
-                fillcolor="rgba(0, 200, 83, 0.1)",
+        # Only show chart if we have enough data points (at least 7 days)
+        if len(sentiment_data) >= 7:
+            fig = go.Figure()
+            fig.add_trace(
+                go.Scatter(
+                    x=sentiment_data["date"],
+                    y=sentiment_data["positive"],
+                    name="Positive",
+                    fill="tonexty",
+                    line=dict(color="#00c853", width=2),
+                    fillcolor="rgba(0, 200, 83, 0.1)",
+                )
             )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=sentiment_data["date"],
-                y=sentiment_data["neutral"],
-                name="Neutral",
-                fill="tonexty",
-                line=dict(color="#78909c", width=2),
-                fillcolor="rgba(120, 144, 156, 0.1)",
+            fig.add_trace(
+                go.Scatter(
+                    x=sentiment_data["date"],
+                    y=sentiment_data["neutral"],
+                    name="Neutral",
+                    fill="tonexty",
+                    line=dict(color="#78909c", width=2),
+                    fillcolor="rgba(120, 144, 156, 0.1)",
+                )
             )
-        )
-        fig.add_trace(
-            go.Scatter(
-                x=sentiment_data["date"],
-                y=sentiment_data["negative"],
-                name="Negative",
-                fill="tozeroy",
-                line=dict(color="#ff5252", width=2),
-                fillcolor="rgba(255, 82, 82, 0.1)",
+            fig.add_trace(
+                go.Scatter(
+                    x=sentiment_data["date"],
+                    y=sentiment_data["negative"],
+                    name="Negative",
+                    fill="tozeroy",
+                    line=dict(color="#ff5252", width=2),
+                    fillcolor="rgba(255, 82, 82, 0.1)",
+                )
             )
-        )
 
-        fig.update_layout(
-            template="plotly_dark",
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=20, b=20),
-            legend=dict(orientation="h", y=1.1),
-            xaxis=dict(showgrid=False),
-            yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)"),
-        )
+            fig.update_layout(
+                template="plotly_dark",
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=20, r=20, t=20, b=20),
+                legend=dict(orientation="h", y=1.1),
+                xaxis=dict(showgrid=False),
+                yaxis=dict(showgrid=True, gridcolor="rgba(255,255,255,0.1)"),
+            )
 
-        st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info(
+                f"📊 Need more data for trend visualization. "
+                f"Currently {len(sentiment_data)} days of data (need 7+). "
+                f"Run more ingestion jobs to populate."
+            )
 
     with col2:
         st.markdown("### Top Topics")
@@ -562,10 +608,10 @@ def render_dashboard():
 
         st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Top Pain Points This Week")
+    st.markdown("### Top Pain Points (30 Days)")
     pain_points = data["pain_points"]
     if pain_points.empty:
-        st.info("No clear pain points detected in the last 7 days.")
+        st.info("No clear pain points detected in the last 30 days.")
     else:
         st.dataframe(
             pain_points.rename(
@@ -628,3 +674,53 @@ def render_dashboard():
         snippet = (title or "Untitled")[:70]
         created_text = created.strftime("%b %d") if created else "N/A"
         st.markdown(f"{sentiment_icon} **{snippet}** `{source}` - {created_text}")
+
+    # Uncategorized topics section
+    uncategorized = data.get("uncategorized", [])
+    if uncategorized:
+        st.markdown("---")
+        st.markdown("### 🏷️ Uncategorized Mentions")
+        st.caption(
+            "These messages have no clear topic or are tagged as 'other'. "
+            "Review them to identify emerging patterns or new topic categories."
+        )
+
+        with st.expander(f"View {len(uncategorized)} uncategorized mentions", expanded=False):
+            for item in uncategorized:
+                title = item.get("title") or item.get("content", "")[:100]
+                source = item.get("source", "unknown")
+                sentiment = item.get("sentiment_simple") or "unknown"
+                created_at = item.get("created_at")
+                created_text = created_at.strftime("%Y-%m-%d") if created_at else "N/A"
+                url = item.get("url") or "#"
+
+                sentiment_color = {
+                    "positive": "#00c853",
+                    "negative": "#ff5252",
+                    "neutral": "#78909c",
+                }.get(sentiment, "#78909c")
+
+                st.markdown(
+                    f"""
+                    <div class="metric-card" style="margin-bottom: 8px; padding: 12px;">
+                        <div style="display:flex; justify-content:space-between; gap:12px;">
+                            <div style="flex: 1;">
+                                <strong>{title[:120]}</strong><br>
+                                <small style="color:#8b9dc3;">{source} • {created_text}</small>
+                            </div>
+                            <div style="text-align:right; min-width:80px;">
+                                <span style="color:{sentiment_color};">{sentiment}</span>
+                            </div>
+                        </div>
+                        <a href="{url}" target="_blank" style="color:#00d4ff; font-size: 12px;">
+                            View original →
+                        </a>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        st.info(
+            "💡 **Tip:** Common patterns in uncategorized mentions may indicate new topics "
+            "to add to the classifier. Consider running sentiment analysis to auto-tag these."
+        )
