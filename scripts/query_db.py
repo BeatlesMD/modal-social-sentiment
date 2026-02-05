@@ -9,14 +9,18 @@ Usage:
 """
 
 import json
+import os
 import sys
 
 import modal
+from modal_app.common import APP_NAME
 
-# Import the query functions from the deployed app
-query_duckdb = modal.Function.from_name("modal-social-sentiment", "query_duckdb")
-get_schema = modal.Function.from_name("modal-social-sentiment", "get_schema")
-get_sample_queries = modal.Function.from_name("modal-social-sentiment", "get_sample_queries")
+app_name = os.environ.get("MODAL_APP_NAME", APP_NAME)
+
+# Import the query functions from the deployed app.
+query_duckdb = modal.Function.from_name(app_name, "query_duckdb")
+get_schema = modal.Function.from_name(app_name, "get_schema")
+get_sample_queries = modal.Function.from_name(app_name, "get_sample_queries")
 
 
 def main():

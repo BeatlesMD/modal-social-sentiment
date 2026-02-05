@@ -54,7 +54,7 @@ app.include(query_app)
 
 
 @app.local_entrypoint()
-def main(task: str = "ingest"):
+def main(task: str = "ingest", sql: str = ""):
     """Run tasks on Modal.
 
     Usage:
@@ -68,7 +68,7 @@ def main(task: str = "ingest"):
         modal run app.py --task status      # Inspect DB counts
         modal run app.py --task schema      # Show DB schema
         modal run app.py --task examples    # Show example queries
-        modal run app.py --task query       # Run SQL query (use --sql "SELECT ...")
+        modal run app.py --task query --sql "SELECT ..."  # Run SQL query
     """
     if task == "test":
         print("Running Modal-native tests...\n")
@@ -163,15 +163,16 @@ def main(task: str = "ingest"):
     elif task == "query":
         import os
 
-        # Get SQL from environment variable
-        sql = os.environ.get("SQL_QUERY")
-        if not sql:
-            print("Error: SQL_QUERY environment variable required")
-            print('Example: SQL_QUERY="SELECT COUNT(*) FROM messages" modal run app.py --task query')
+        # Allow either --sql argument or SQL_QUERY env var.
+        sql_query = sql or os.environ.get("SQL_QUERY")
+        if not sql_query:
+            print("Error: SQL query is required via --sql or SQL_QUERY environment variable")
+            print('Example: modal run app.py --task query --sql "SELECT COUNT(*) FROM messages"')
+            print('Or: SQL_QUERY="SELECT COUNT(*) FROM messages" modal run app.py --task query')
             return
 
-        print(f"Executing query: {sql}\n")
-        result = query_duckdb.remote(sql=sql, limit=1000, format="json")
+        print(f"Executing query: {sql_query}\n")
+        result = query_duckdb.remote(sql=sql_query, limit=1000, format="json")
         import json
 
         print(f"Rows returned: {result['row_count']}")

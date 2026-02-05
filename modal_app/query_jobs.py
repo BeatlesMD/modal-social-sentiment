@@ -14,6 +14,7 @@ from modal_app.common import base_image, data_volume
 from src.config import DUCKDB_PATH
 
 app = modal.App()
+MAX_QUERY_LIMIT = 1000
 
 
 @app.function(
@@ -46,14 +47,28 @@ def query_duckdb(
 
     logger = structlog.get_logger()
 
-    # Basic safety check - only allow SELECT statements
-    sql_upper = sql.strip().upper()
-    if not sql_upper.startswith("SELECT"):
-        raise ValueError("Only SELECT queries are allowed for safety")
+    normalized_sql = sql.strip().rstrip(";").strip()
+    if not normalized_sql:
+        raise ValueError("SQL query cannot be empty")
 
-    # Add LIMIT if not present (to prevent accidental huge results)
-    if "LIMIT" not in sql_upper:
-        sql = f"{sql.rstrip(';')} LIMIT {limit}"
+    sql_upper = normalized_sql.upper()
+    if not (sql_upper.startswith("SELECT") or sql_upper.startswith("WITH")):
+        raise ValueError("Only SELECT/CTE queries are allowed for safety")
+
+    # Block multiple statements; only a single read query is allowed.
+    if ";" in normalized_sql:
+        raise ValueError("Only a single SELECT statement is allowed")
+
+    try:
+        safe_limit = int(limit)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("limit must be an integer") from exc
+
+    safe_limit = max(1, min(safe_limit, MAX_QUERY_LIMIT))
+    executed_sql = f"SELECT * FROM ({normalized_sql}) AS query_result LIMIT {safe_limit}"
+
+    if format not in {"json", "table"}:
+        raise ValueError("format must be 'json' or 'table'")
 
     db_path = DUCKDB_PATH
     if not Path(db_path).exists():
@@ -61,7 +76,7 @@ def query_duckdb(
 
     try:
         conn = duckdb.connect(db_path, read_only=True)
-        cursor = conn.execute(sql)
+        cursor = conn.execute(executed_sql)
 
         # Get column names
         columns = [desc[0] for desc in cursor.description] if cursor.description else []
@@ -77,21 +92,24 @@ def query_duckdb(
             # Return as list of tuples (table format)
             result_rows = rows
 
-        conn.close()
-
         logger.info("Query executed successfully", row_count=len(rows), columns=len(columns))
 
         return {
             "columns": columns,
             "rows": result_rows,
             "row_count": len(rows),
-            "query": sql,
+            "query": executed_sql,
+            "requested_query": normalized_sql,
+            "limit_applied": safe_limit,
             "format": format,
         }
 
     except Exception as e:
-        logger.error("Query execution failed", error=str(e), query=sql)
+        logger.error("Query execution failed", error=str(e), query=normalized_sql)
         raise
+    finally:
+        if "conn" in locals():
+            conn.close()
 
 
 @app.function(
