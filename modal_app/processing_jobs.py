@@ -157,6 +157,28 @@ def reset_embeddings():
 
 
 @app.function(image=embedding_image, volumes={"/data": data_volume})
+def clear_source_data(source: str):
+    """Clear all messages from a specific source for re-ingestion."""
+    import structlog
+    from src.storage.duckdb_store import DuckDBStore
+
+    logger = structlog.get_logger()
+    
+    with DuckDBStore(DUCKDB_PATH) as db:
+        count_before = db.conn.execute(
+            "SELECT COUNT(*) FROM messages WHERE source = ?", [source]
+        ).fetchone()[0]
+        
+        db.conn.execute("DELETE FROM messages WHERE source = ?", [source])
+        db.conn.execute("DELETE FROM ingestion_state WHERE source = ?", [source])
+        
+        logger.info("Cleared source data", source=source, deleted_count=count_before)
+    
+    data_volume.commit()
+    return {"status": "success", "source": source, "deleted_count": count_before}
+
+
+@app.function(image=embedding_image, volumes={"/data": data_volume})
 def check_db_status():
     """Check current database counts and coverage."""
     import structlog

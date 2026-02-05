@@ -42,10 +42,32 @@ class RedditRSSIngester(BaseIngester):
         "learnmachinelearning",
         "deeplearning",
         "datascience",
+        "singularity",
+        "LanguageTechnology",
     ]
     
-    # Search terms
-    SEARCH_TERMS = ["modal.com", "modal labs"]
+    # Search terms - Modal cloud platform specific
+    SEARCH_TERMS = [
+        "modal.com",
+        "modal labs", 
+        '"modal" serverless',
+        '"modal" gpu cloud',
+        '"modal" python cloud',
+    ]
+    
+    # Keywords that must appear in title or content for relevance filtering
+    MODAL_KEYWORDS = [
+        "modal.com",
+        "modal labs",
+        "modal cloud",
+        "modal serverless",
+        "modal gpu",
+        "@modal",  # decorator
+        "modal.function",
+        "modal.app",
+        "modal run",
+        "modal deploy",
+    ]
     
     def __init__(self):
         super().__init__()
@@ -125,6 +147,66 @@ class RedditRSSIngester(BaseIngester):
             except Exception as e:
                 self.logger.warning("Failed to parse entry", error=str(e))
     
+    def _is_modal_related(self, title: str, content: str) -> bool:
+        """Check if the post is actually about Modal cloud platform.
+        
+        We need to be careful to exclude:
+        - "multimodal" (ML term)
+        - "modal dialog" (UI term)
+        - General uses of "modal" unrelated to the cloud platform
+        """
+        text = f"{title} {content}".lower()
+        
+        # Strong signals - definitely Modal cloud platform
+        strong_keywords = [
+            "modal.com",
+            "modal labs",
+            "modal cloud",
+            "modal serverless",
+            "modal.run",
+            "modal deploy",
+            "@modal",  # decorator
+            "modal.function",
+            "modal.app",
+            "modal.cls",
+            "modal.volume",
+            "modal.image",
+            "pip install modal",
+        ]
+        
+        for keyword in strong_keywords:
+            if keyword in text:
+                return True
+        
+        # Exclude common false positives
+        false_positive_patterns = [
+            "multimodal",
+            "multi-modal", 
+            "modal dialog",
+            "modal window",
+            "modal popup",
+            "modal verb",  # linguistic term
+            "bimodal",
+            "unimodal",
+            "intermodal",
+        ]
+        
+        for pattern in false_positive_patterns:
+            if pattern in text:
+                # If it contains a false positive pattern but no strong signals, skip
+                return False
+        
+        # If we get here and "modal" appears with cloud context, include it
+        if " modal " in f" {text} " or text.startswith("modal ") or text.endswith(" modal"):
+            cloud_context = any(w in text for w in [
+                "serverless", "gpu cloud", "deploy", "container",
+                "python cloud", "inference api"
+            ])
+            if cloud_context:
+                return True
+        
+        return False
+    
     def _entry_to_message(
         self,
         entry: ElementTree.Element,
@@ -151,6 +233,15 @@ class RedditRSSIngester(BaseIngester):
         # Clean HTML from content
         content = self._strip_html(content)
         
+        # Filter: Only include Modal-related posts
+        if not self._is_modal_related(title, content):
+            self.logger.debug(
+                "Skipping non-Modal post",
+                title=title[:50],
+                subreddit=subreddit,
+            )
+            return None
+        
         # Parse date
         updated = updated_elem.text if updated_elem is not None else None
         created_at = self._parse_date(updated) if updated else datetime.utcnow()
@@ -171,6 +262,8 @@ class RedditRSSIngester(BaseIngester):
         full_content = title
         if content and content != title:
             full_content += f"\n\n{content}"
+        
+        self.logger.info("Found Modal-related post", title=title[:60], subreddit=subreddit)
         
         return Message(
             id=self.create_message_id(source_id),

@@ -19,6 +19,7 @@ from modal_app.processing_jobs import (
     app as processing_app,
     analyze_sentiment,
     check_db_status,
+    clear_source_data,
     generate_embeddings,
     reset_embeddings,
 )

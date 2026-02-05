@@ -187,41 +187,68 @@ class DuckDBStore:
         topics: list[str] | None = None,
         embedding_id: str | None = None,
     ):
-        """Update analysis fields for a message."""
-        updates = []
-        params = []
-        marks_analysis_complete = False
+        """Update analysis fields for a message.
         
+        Uses a workaround for DuckDB's known index limitation with UPDATE
+        on tables with ART indexes. We fetch the row, delete it, and reinsert.
+        """
+        # Fetch existing row
+        existing = self.conn.execute(
+            "SELECT * FROM messages WHERE id = ?", [message_id]
+        ).fetchone()
+        
+        if not existing:
+            logger.warning("Message not found for update", message_id=message_id)
+            return
+        
+        columns = [desc[0] for desc in self.conn.description]
+        row = dict(zip(columns, existing))
+        
+        # Apply updates to the row
         if sentiment_simple is not None:
-            updates.append("sentiment_simple = ?")
-            params.append(sentiment_simple)
-            marks_analysis_complete = True
+            row["sentiment_simple"] = sentiment_simple
         if sentiment_rich is not None:
-            updates.append("sentiment_rich = ?")
-            params.append(sentiment_rich)
-            marks_analysis_complete = True
+            row["sentiment_rich"] = sentiment_rich
         if content_type is not None:
-            updates.append("content_type = ?")
-            params.append(content_type)
-            marks_analysis_complete = True
+            row["content_type"] = content_type
         if topics is not None:
-            updates.append("topics = ?")
-            params.append(json.dumps(topics))
-            marks_analysis_complete = True
+            row["topics"] = json.dumps(topics)
         if embedding_id is not None:
-            updates.append("embedding_id = ?")
-            params.append(embedding_id)
+            row["embedding_id"] = embedding_id
         
-        if updates:
-            if marks_analysis_complete:
-                updates.append("processed_at = ?")
-                params.append(datetime.utcnow())
-            params.append(message_id)
-            
-            self.conn.execute(
-                f"UPDATE messages SET {', '.join(updates)} WHERE id = ?",
-                params
-            )
+        # Mark as processed if we're doing analysis
+        if any([sentiment_simple, sentiment_rich, content_type, topics]):
+            row["processed_at"] = datetime.utcnow()
+        
+        # Delete and reinsert (workaround for DuckDB ART index bug)
+        self.conn.execute("DELETE FROM messages WHERE id = ?", [message_id])
+        self.conn.execute("""
+            INSERT INTO messages (
+                id, source, source_id, content, title, author, url,
+                parent_id, thread_id, created_at, fetched_at, processed_at,
+                metadata, sentiment_simple, sentiment_rich, content_type,
+                topics, embedding_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            row["id"],
+            row["source"],
+            row["source_id"],
+            row["content"],
+            row["title"],
+            row["author"],
+            row["url"],
+            row["parent_id"],
+            row["thread_id"],
+            row["created_at"],
+            row["fetched_at"],
+            row["processed_at"],
+            row["metadata"] if isinstance(row["metadata"], str) else json.dumps(row["metadata"] or {}),
+            row["sentiment_simple"],
+            row["sentiment_rich"],
+            row["content_type"],
+            row["topics"] if isinstance(row["topics"], str) else json.dumps(row["topics"] or []),
+            row["embedding_id"],
+        ])
     
     def get_messages_without_embeddings(self, limit: int = 100) -> list[dict]:
         """Get messages that do not have embeddings yet."""
