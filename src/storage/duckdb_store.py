@@ -220,35 +220,50 @@ class DuckDBStore:
         if any([sentiment_simple, sentiment_rich, content_type, topics]):
             row["processed_at"] = datetime.utcnow()
         
-        # Delete and reinsert (workaround for DuckDB ART index bug)
-        self.conn.execute("DELETE FROM messages WHERE id = ?", [message_id])
-        self.conn.execute("""
-            INSERT INTO messages (
-                id, source, source_id, content, title, author, url,
-                parent_id, thread_id, created_at, fetched_at, processed_at,
-                metadata, sentiment_simple, sentiment_rich, content_type,
-                topics, embedding_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [
-            row["id"],
-            row["source"],
-            row["source_id"],
-            row["content"],
-            row["title"],
-            row["author"],
-            row["url"],
-            row["parent_id"],
-            row["thread_id"],
-            row["created_at"],
-            row["fetched_at"],
-            row["processed_at"],
-            row["metadata"] if isinstance(row["metadata"], str) else json.dumps(row["metadata"] or {}),
-            row["sentiment_simple"],
-            row["sentiment_rich"],
-            row["content_type"],
-            row["topics"] if isinstance(row["topics"], str) else json.dumps(row["topics"] or []),
-            row["embedding_id"],
-        ])
+        # Delete and reinsert (workaround for DuckDB ART index bug).
+        # Use an explicit transaction so we don't drop rows on failure.
+        try:
+            self.conn.execute("BEGIN")
+            self.conn.execute("DELETE FROM messages WHERE id = ?", [message_id])
+            self.conn.execute("""
+                INSERT INTO messages (
+                    id, source, source_id, content, title, author, url,
+                    parent_id, thread_id, created_at, fetched_at, processed_at,
+                    metadata, sentiment_simple, sentiment_rich, content_type,
+                    topics, embedding_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, [
+                row["id"],
+                row["source"],
+                row["source_id"],
+                row["content"],
+                row["title"],
+                row["author"],
+                row["url"],
+                row["parent_id"],
+                row["thread_id"],
+                row["created_at"],
+                row["fetched_at"],
+                row["processed_at"],
+                row["metadata"] if isinstance(row["metadata"], str) else json.dumps(row["metadata"] or {}),
+                row["sentiment_simple"],
+                row["sentiment_rich"],
+                row["content_type"],
+                row["topics"] if isinstance(row["topics"], str) else json.dumps(row["topics"] or []),
+                row["embedding_id"],
+            ])
+            self.conn.execute("COMMIT")
+        except Exception as exc:
+            try:
+                self.conn.execute("ROLLBACK")
+            except Exception:
+                logger.warning("Rollback failed after update error", message_id=message_id)
+            logger.error(
+                "Failed to update message analysis",
+                message_id=message_id,
+                error=str(exc),
+            )
+            raise
     
     def get_messages_without_embeddings(self, limit: int = 100) -> list[dict]:
         """Get messages that do not have embeddings yet."""

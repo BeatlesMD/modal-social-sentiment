@@ -161,6 +161,7 @@ def clear_source_data(source: str):
     """Clear all messages from a specific source for re-ingestion."""
     import structlog
     from src.storage.duckdb_store import DuckDBStore
+    from src.storage.lancedb_store import LanceDBStore
 
     logger = structlog.get_logger()
     
@@ -174,8 +175,17 @@ def clear_source_data(source: str):
         
         logger.info("Cleared source data", source=source, deleted_count=count_before)
     
+    vector_store = LanceDBStore(LANCEDB_PATH)
+    deleted_vectors = vector_store.delete_by_source(source)
+    logger.info("Cleared vector data", source=source, deleted_vectors=deleted_vectors)
+    
     data_volume.commit()
-    return {"status": "success", "source": source, "deleted_count": count_before}
+    return {
+        "status": "success",
+        "source": source,
+        "deleted_count": count_before,
+        "deleted_vectors": deleted_vectors,
+    }
 
 
 @app.function(image=embedding_image, volumes={"/data": data_volume})
