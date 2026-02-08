@@ -58,10 +58,15 @@ def generate_embeddings():
                     metadata={"title": msg.get("title")},
                 )
             )
-            db.update_message_analysis(message_id=msg["id"], embedding_id=msg["id"])
 
+        # Write vectors to LanceDB FIRST, then mark in DuckDB.
+        # This prevents DuckDB marking embeddings as done when LanceDB fails.
         vector_store.upsert_vectors(records)
         vector_store.sync_to_volume()
+
+        for msg in messages:
+            db.update_message_analysis(message_id=msg["id"], embedding_id=msg["id"])
+
         logger.info("Embedding generation complete", count=len(records))
 
     data_volume.commit()
