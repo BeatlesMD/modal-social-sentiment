@@ -61,6 +61,7 @@ def generate_embeddings():
             db.update_message_analysis(message_id=msg["id"], embedding_id=msg["id"])
 
         vector_store.upsert_vectors(records)
+        vector_store.sync_to_volume()
         logger.info("Embedding generation complete", count=len(records))
 
     data_volume.commit()
@@ -177,6 +178,7 @@ def clear_source_data(source: str):
     
     vector_store = LanceDBStore(LANCEDB_PATH)
     deleted_vectors = vector_store.delete_by_source(source)
+    vector_store.sync_to_volume()
     logger.info("Cleared vector data", source=source, deleted_vectors=deleted_vectors)
     
     data_volume.commit()

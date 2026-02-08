@@ -3,13 +3,17 @@ LanceDB storage layer for vector embeddings and semantic search.
 
 LanceDB is excellent for:
 - Serverless vector search (no separate server needed)
-- Direct file storage on Modal Volumes
 - Fast similarity search with IVF-PQ indexes
+
+On Modal Volumes, LanceDB cannot do in-place file renames/copies.  We
+therefore work on a local temp copy and sync back after mutations.
 """
 
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+import shutil
+import tempfile
 
 import lancedb
 import structlog
@@ -24,16 +28,43 @@ class LanceDBStore:
     LanceDB-based vector storage for semantic search.
     
     Stores embeddings alongside metadata for RAG retrieval.
-    Works directly on Modal Volumes.
+    Uses a local working copy when the backing path is on a Modal Volume
+    (detected by a ``/data/`` prefix) because LanceDB needs full POSIX
+    filesystem semantics (rename, link) that Modal Volumes don't support.
     """
     
     TABLE_NAME = "embeddings"
     
     def __init__(self, db_path: str):
-        self.db_path = db_path
-        self._ensure_parent_dir()
-        self.db = lancedb.connect(db_path)
+        self.volume_path = db_path
+        self._use_local_copy = db_path.startswith("/data/")
+        
+        if self._use_local_copy:
+            self._local_dir = tempfile.mkdtemp(prefix="lancedb_")
+            self._local_path = str(Path(self._local_dir) / "vectors")
+            vol = Path(db_path)
+            if vol.exists():
+                shutil.copytree(str(vol), self._local_path, dirs_exist_ok=True)
+            else:
+                Path(self._local_path).mkdir(parents=True, exist_ok=True)
+            self.db_path = self._local_path
+        else:
+            self.db_path = db_path
+            self._local_dir = None
+            self._ensure_parent_dir()
+        
+        self.db = lancedb.connect(self.db_path)
         self._init_table()
+    
+    def sync_to_volume(self):
+        """Copy local working copy back to the Modal Volume path."""
+        if not self._use_local_copy:
+            return
+        vol = Path(self.volume_path)
+        if vol.exists():
+            shutil.rmtree(str(vol))
+        shutil.copytree(self._local_path, str(vol), dirs_exist_ok=True)
+        logger.info("Synced LanceDB to volume", path=self.volume_path)
     
     def _ensure_parent_dir(self):
         """Ensure the parent directory exists."""
